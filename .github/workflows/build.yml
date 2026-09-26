@@ -1,0 +1,95 @@
+name: Build Lancelot USB WiFi Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout workflow
+        uses: actions/checkout@v4
+
+      - name: Clone Proton kernel
+        run: |
+          git clone --depth=1 --branch kernel-tree \
+            https://github.com/Jbub5/android_kernel_xiaomi_mt6768.git kernel
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex build-essential \
+            clang llvm lld \
+            gcc-aarch64-linux-gnu \
+            libssl-dev libelf-dev \
+            python3 cpio rsync
+
+      - name: Prepare kernel config
+        working-directory: kernel
+        run: |
+          make ARCH=arm64 lancelot_defconfig
+
+          ./scripts/config --enable CONFIG_MODULES
+          ./scripts/config --enable CONFIG_MODVERSIONS
+          ./scripts/config --enable CONFIG_CFG80211
+          ./scripts/config --enable CONFIG_MAC80211
+          ./scripts/config --enable CONFIG_WLAN
+          ./scripts/config --enable CONFIG_USB
+
+          ./scripts/config --module CONFIG_MT7601U
+          ./scripts/config --module CONFIG_RT2800USB
+          ./scripts/config --module CONFIG_RT2800LIB
+          ./scripts/config --module CONFIG_RT2X00USB
+          ./scripts/config --module CONFIG_RT2X00LIB
+          ./scripts/config --module CONFIG_ATH9K_HTC
+
+          make ARCH=arm64 olddefconfig
+
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          make -j2 \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            Image.gz-dtb
+
+          make -j2 \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            modules
+
+      - name: Collect results
+        run: |
+          mkdir -p release
+
+          cp kernel/arch/arm64/boot/Image.gz-dtb \
+            release/Image.gz-dtb
+
+          find kernel \
+            -type f \
+            \( \
+              -name "mt7601u.ko" \
+              -o -name "rt2800usb.ko" \
+              -o -name "rt2800lib.ko" \
+              -o -name "rt2x00usb.ko" \
+              -o -name "rt2x00lib.ko" \
+              -o -name "ath9k_htc.ko" \
+            \) \
+            -exec cp {} release/ \;
+
+          echo "=== BUILD RESULT ==="
+          ls -lh release/
+
+      - name: Upload kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: lancelot-usb-wifi-kernel
+          path: release/
