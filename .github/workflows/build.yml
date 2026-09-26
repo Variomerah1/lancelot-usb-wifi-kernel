@@ -19,6 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             bc \
             bison \
@@ -33,6 +34,12 @@ jobs:
             python3 \
             cpio \
             rsync
+
+          sudo mkdir -p /tools/build
+          sudo ln -sf /usr/bin/cpio /tools/build/cpio
+
+          echo "=== CHECK CPIO ==="
+          /tools/build/cpio --version
 
       - name: Prepare kernel config
         working-directory: kernel
@@ -61,10 +68,10 @@ jobs:
           set -o pipefail
 
           echo "========================================"
-          echo "        BUILD KERNEL - SINGLE JOB"
+          echo "        BUILD KERNEL"
           echo "========================================"
 
-          make -j1 \
+          make -j2 \
             ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
@@ -72,47 +79,35 @@ jobs:
             LD=ld.lld \
             Image.gz-dtb 2>&1 | tee ../kernel-build.log
 
-      - name: Show exact build failure
-        if: failure()
-        run: |
           echo "========================================"
-          echo "        HASIL DIAGNOSTIK"
+          echo "        BUILD MODULES"
           echo "========================================"
 
-          echo ""
-          echo "=== SEMUA BARIS ERROR ==="
-
-          grep -n -i -E \
-            "error:|fatal:|ld.lld:|clang: error|killed|No such file|undefined reference|relocation|make: \*\*\*" \
-            kernel-build.log || true
-
-          echo ""
-          echo "=== BARIS 500-630 ==="
-
-          nl -ba kernel-build.log | sed -n '500,630p'
-
-          echo ""
-          echo "=== 100 BARIS TERAKHIR ==="
-
-          tail -n 100 kernel-build.log
-
-      - name: Build modules
-        if: success()
-        working-directory: kernel
-        run: |
-          set -o pipefail
-
-          echo "========================================"
-          echo "        BUILDING WIFI MODULES"
-          echo "========================================"
-
-          make -j1 \
+          make -j2 \
             ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             CC=clang \
             LD=ld.lld \
             modules 2>&1 | tee -a ../kernel-build.log
+
+      - name: Show build errors
+        if: failure()
+        run: |
+          echo "========================================"
+          echo "        ERROR ASLI BUILD KERNEL"
+          echo "========================================"
+
+          grep -n -i -E \
+            "error:|fatal:|ld.lld:|clang: error|killed|No such file|undefined reference|relocation|make: \*\*\*" \
+            kernel-build.log || true
+
+          echo ""
+          echo "========================================"
+          echo "        100 BARIS TERAKHIR"
+          echo "========================================"
+
+          tail -n 100 kernel-build.log
 
       - name: Check WiFi drivers
         if: success()
