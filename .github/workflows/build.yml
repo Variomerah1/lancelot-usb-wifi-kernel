@@ -38,8 +38,28 @@ jobs:
           sudo mkdir -p /tools/build
           sudo ln -sf /usr/bin/cpio /tools/build/cpio
 
-          echo "=== CHECK CPIO ==="
-          /tools/build/cpio --version
+      - name: Fix kernel source
+        working-directory: kernel
+        run: |
+          echo "=== CHECK HELIO DVFSRC ==="
+
+          if [ -f drivers/devfreq/helio-dvfsrc-ipi.c ]; then
+            echo "Found helio-dvfsrc-ipi.c"
+
+            sed -i \
+              's/#include <helio-dvfsrc-ipi.h>/#include "helio-dvfsrc-ipi.h"/' \
+              drivers/devfreq/helio-dvfsrc-ipi.c
+
+            echo "=== INCLUDE SETELAH PATCH ==="
+            grep -n "helio-dvfsrc-ipi.h" \
+              drivers/devfreq/helio-dvfsrc-ipi.c
+          else
+            echo "ERROR: helio-dvfsrc-ipi.c tidak ditemukan"
+            exit 1
+          fi
+
+          echo "=== HEADER CHECK ==="
+          find . -name "helio-dvfsrc-ipi.h" -print
 
       - name: Prepare kernel config
         working-directory: kernel
