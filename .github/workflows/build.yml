@@ -20,11 +20,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison flex build-essential \
-            clang llvm lld \
+            bc \
+            bison \
+            flex \
+            build-essential \
+            clang \
+            llvm \
+            lld \
             gcc-aarch64-linux-gnu \
-            libssl-dev libelf-dev \
-            python3 cpio rsync
+            libssl-dev \
+            libelf-dev \
+            python3 \
+            cpio \
+            rsync
 
       - name: Prepare kernel config
         working-directory: kernel
@@ -47,12 +55,15 @@ jobs:
 
           make ARCH=arm64 olddefconfig
 
-            - name: Build kernel
+      - name: Build kernel
         working-directory: kernel
         run: |
           set -o pipefail
 
-          echo "=== BUILD KERNEL ==="
+          echo "========================================"
+          echo "        BUILDING KERNEL"
+          echo "========================================"
+
           make -j2 \
             ARCH=arm64 \
             LLVM=1 \
@@ -61,8 +72,17 @@ jobs:
             LD=ld.lld \
             Image.gz-dtb 2>&1 | tee ../kernel-build.log
 
-          echo "=== BUILD LOG TERAKHIR ==="
-          tail -n 150 ../kernel-build.log
+          echo "========================================"
+          echo "        BUILDING MODULES"
+          echo "========================================"
+
+          make -j2 \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            modules 2>&1 | tee -a ../kernel-build.log
 
       - name: Show build errors
         if: failure()
@@ -82,7 +102,26 @@ jobs:
 
           tail -n 150 kernel-build.log
 
+      - name: Check WiFi drivers
+        run: |
+          echo "========================================"
+          echo "        WIFI DRIVER CHECK"
+          echo "========================================"
+
+          find kernel \
+            -type f \
+            \( \
+              -name "mt7601u.ko" \
+              -o -name "rt2800usb.ko" \
+              -o -name "rt2800lib.ko" \
+              -o -name "rt2x00usb.ko" \
+              -o -name "rt2x00lib.ko" \
+              -o -name "ath9k_htc.ko" \
+            \) \
+            -print
+
       - name: Collect results
+        if: success()
         run: |
           mkdir -p release
 
@@ -101,10 +140,14 @@ jobs:
             \) \
             -exec cp {} release/ \;
 
-          echo "=== BUILD RESULT ==="
+          echo "========================================"
+          echo "        BUILD RESULT"
+          echo "========================================"
+
           ls -lh release/
 
       - name: Upload kernel
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: lancelot-usb-wifi-kernel
