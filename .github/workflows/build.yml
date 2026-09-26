@@ -6,64 +6,45 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 90
 
     steps:
       - name: Checkout workflow
         uses: actions/checkout@v4
 
-      - name: Clone Proton kernel
-        run: |
-          git clone --depth=1 --branch kernel-tree \
-            https://github.com/Jbub5/android_kernel_xiaomi_mt6768.git kernel
-
       - name: Install dependencies
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
-            bc \
-            bison \
-            flex \
-            build-essential \
-            clang \
-            llvm \
-            lld \
-            gcc-aarch64-linux-gnu \
-            libssl-dev \
-            libelf-dev \
-            python3 \
-            cpio \
-            rsync
+            bc bison build-essential cpio flex \
+            libssl-dev libelf-dev libncurses-dev \
+            python3 python3-pip rsync unzip zip \
+            clang lld llvm git curl wget
 
           sudo mkdir -p /tools/build
           sudo ln -sf /usr/bin/cpio /tools/build/cpio
 
-      - name: Fix kernel source
-        working-directory: kernel
+          /tools/build/cpio --version
+
+      - name: Clone Proton kernel source
         run: |
-          echo "=== CHECK HELIO DVFSRC ==="
+          git clone --depth=1 \
+            --branch kernel-tree \
+            https://github.com/Jbub5/android_kernel_xiaomi_mt6768.git \
+            kernel
 
-          if [ -f drivers/devfreq/helio-dvfsrc-ipi.c ]; then
-            echo "Found helio-dvfsrc-ipi.c"
+          cd kernel
 
-            sed -i \
-              's/#include <helio-dvfsrc-ipi.h>/#include "helio-dvfsrc-ipi.h"/' \
-              drivers/devfreq/helio-dvfsrc-ipi.c
-
-            echo "=== INCLUDE SETELAH PATCH ==="
-            grep -n "helio-dvfsrc-ipi.h" \
-              drivers/devfreq/helio-dvfsrc-ipi.c
-          else
-            echo "ERROR: helio-dvfsrc-ipi.c tidak ditemukan"
-            exit 1
-          fi
-
-          echo "=== HEADER CHECK ==="
-          find . -name "helio-dvfsrc-ipi.h" -print
+          echo "=== SOURCE ==="
+          git rev-parse HEAD
+          git branch --show-current
+          make kernelversion || true
 
       - name: Prepare kernel config
         working-directory: kernel
         run: |
+          set -eux
+
           make ARCH=arm64 lancelot_defconfig
 
           ./scripts/config --enable CONFIG_MODULES
@@ -72,6 +53,7 @@ jobs:
           ./scripts/config --enable CONFIG_MAC80211
           ./scripts/config --enable CONFIG_WLAN
           ./scripts/config --enable CONFIG_USB
+          ./scripts/config --enable CONFIG_WLAN_VENDOR_MEDIATEK
 
           ./scripts/config --module CONFIG_MT7601U
           ./scripts/config --module CONFIG_RT2800USB
@@ -82,14 +64,57 @@ jobs:
 
           make ARCH=arm64 olddefconfig
 
+          echo "=== WIFI CONFIG ==="
+          grep -E \
+            'CONFIG_(MODULES|MODVERSIONS|CFG80211|MAC80211|WLAN=|USB=|WLAN_VENDOR_MEDIATEK|MT7601U|RT2800USB|RT2800LIB|RT2X00USB|RT2X00LIB|ATH9K_HTC)' \
+            .config || true
+
+      - name: Fix MediaTek devfreq include paths
+        working-directory: kernel
+        run: |
+          set -eux
+
+          echo "=== BEFORE PATCH ==="
+          grep -RIn \
+            -E '#include [<"]((governor|helio-dvfsrc|helio-dvfsrc-ipi)\.h|.*helio-dvfsrc.*\.h)[">]' \
+            drivers/devfreq 2>/dev/null || true
+
+          # MediaTek devfreq sources use headers located in
+          # drivers/devfreq/.  The nested helio-dvfsrc-v2 directory
+          # does not automatically search its parent directory.
+          if [ -f drivers/devfreq/Makefile ]; then
+            if ! grep -q 'srctree)/drivers/devfreq' drivers/devfreq/Makefile; then
+              printf '\n# Lancelot Proton/MTK compatibility\n' >> drivers/devfreq/Makefile
+              printf 'ccflags-y += -I$(srctree)/drivers/devfreq\n' >> drivers/devfreq/Makefile
+            fi
+          fi
+
+          # Keep the existing MTK source intact; only normalize the
+          # local header includes that are known to be used by this tree.
+          find drivers/devfreq -type f \( -name '*.c' -o -name '*.h' \) \
+            -print0 | xargs -0 -r sed -i \
+            -e 's/#include <helio-dvfsrc-ipi\.h>/#include "helio-dvfsrc-ipi.h"/g'
+
+          find drivers/devfreq -type f \( -name '*.c' -o -name '*.h' \) \
+            -print0 | xargs -0 -r sed -i \
+            -e 's/#include <helio-dvfsrc\.h>/#include "helio-dvfsrc.h"/g'
+
+          echo "=== DEVFREQ MAKEFILE ==="
+          tail -n 10 drivers/devfreq/Makefile
+
+          echo "=== HEADER LOCATIONS ==="
+          find drivers/devfreq -type f \
+            \( -name 'governor.h' \
+            -o -name 'helio-dvfsrc.h' \
+            -o -name 'helio-dvfsrc-ipi.h' \) \
+            -print
+
       - name: Build kernel
         working-directory: kernel
         run: |
           set -o pipefail
 
-          echo "========================================"
-          echo "        BUILD KERNEL"
-          echo "========================================"
+          echo "=== BUILD KERNEL ==="
 
           make -j2 \
             ARCH=arm64 \
@@ -97,11 +122,15 @@ jobs:
             LLVM_IAS=1 \
             CC=clang \
             LD=ld.lld \
-            Image.gz-dtb 2>&1 | tee ../kernel-build.log
+            Image.gz-dtb \
+            2>&1 | tee ../kernel-build.log
 
-          echo "========================================"
-          echo "        BUILD MODULES"
-          echo "========================================"
+      - name: Build WiFi modules
+        working-directory: kernel
+        run: |
+          set -o pipefail
+
+          echo "=== BUILD MODULES ==="
 
           make -j2 \
             ARCH=arm64 \
@@ -109,74 +138,67 @@ jobs:
             LLVM_IAS=1 \
             CC=clang \
             LD=ld.lld \
-            modules 2>&1 | tee -a ../kernel-build.log
+            modules \
+            2>&1 | tee ../modules-build.log
 
-      - name: Show build errors
-        if: failure()
+      - name: Verify kernel
+        working-directory: kernel
         run: |
-          echo "========================================"
-          echo "        ERROR ASLI BUILD KERNEL"
-          echo "========================================"
+          set -eux
 
-          grep -n -i -E \
-            "error:|fatal:|ld.lld:|clang: error|killed|No such file|undefined reference|relocation|make: \*\*\*" \
-            kernel-build.log || true
+          test -f arch/arm64/boot/Image.gz-dtb
 
-          echo ""
-          echo "========================================"
-          echo "        100 BARIS TERAKHIR"
-          echo "========================================"
+          echo "=== KERNEL ==="
+          ls -lh arch/arm64/boot/Image.gz-dtb
 
-          tail -n 100 kernel-build.log
-
-      - name: Check WiFi drivers
-        if: success()
-        run: |
-          echo "========================================"
-          echo "        WIFI DRIVER CHECK"
-          echo "========================================"
-
-          find kernel \
-            -type f \
-            \( \
-              -name "mt7601u.ko" \
-              -o -name "rt2800usb.ko" \
-              -o -name "rt2800lib.ko" \
-              -o -name "rt2x00usb.ko" \
-              -o -name "rt2x00lib.ko" \
-              -o -name "ath9k_htc.ko" \
-            \) \
+          echo "=== WIFI MODULES ==="
+          find . -type f \
+            \( -name 'mt7601u.ko' \
+            -o -name 'rt2800usb.ko' \
+            -o -name 'rt2800lib.ko' \
+            -o -name 'rt2x00usb.ko' \
+            -o -name 'rt2x00lib.ko' \
+            -o -name 'ath9k_htc.ko' \
+            -o -name 'mac80211.ko' \
+            -o -name 'cfg80211.ko' \) \
             -print
 
-      - name: Collect results
+      - name: Collect artifacts
         if: success()
         run: |
-          mkdir -p release
+          mkdir -p out
 
           cp kernel/arch/arm64/boot/Image.gz-dtb \
-            release/Image.gz-dtb
+            out/Image.gz-dtb
 
-          find kernel \
-            -type f \
-            \( \
-              -name "mt7601u.ko" \
-              -o -name "rt2800usb.ko" \
-              -o -name "rt2800lib.ko" \
-              -o -name "rt2x00usb.ko" \
-              -o -name "rt2x00lib.ko" \
-              -o -name "ath9k_htc.ko" \
-            \) \
-            -exec cp {} release/ \;
+          find kernel -type f \
+            \( -name 'mt7601u.ko' \
+            -o -name 'rt2800usb.ko' \
+            -o -name 'rt2800lib.ko' \
+            -o -name 'rt2x00usb.ko' \
+            -o -name 'rt2x00lib.ko' \
+            -o -name 'ath9k_htc.ko' \
+            -o -name 'mac80211.ko' \
+            -o -name 'cfg80211.ko' \) \
+            -exec cp --parents {} out/ \;
 
-          echo "========================================"
-          echo "        BUILD RESULT"
-          echo "========================================"
+          cp kernel/.config out/kernel-config
 
-          ls -lh release/
+          echo "=== OUTPUT ==="
+          find out -type f -exec ls -lh {} \;
 
-      - name: Upload kernel
+      - name: Upload successful build
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: lancelot-usb-wifi-kernel
-          path: release/
+          path: out/
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lancelot-build-logs
+          path: |
+            kernel-build.log
+            modules-build.log
