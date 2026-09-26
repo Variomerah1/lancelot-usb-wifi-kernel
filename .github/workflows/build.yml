@@ -47,24 +47,40 @@ jobs:
 
           make ARCH=arm64 olddefconfig
 
-      - name: Build kernel
+            - name: Build kernel
         working-directory: kernel
         run: |
-          make -j2 \
-            ARCH=arm64 \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            CC=clang \
-            LD=ld.lld \
-            Image.gz-dtb
+          set -o pipefail
 
+          echo "=== BUILD KERNEL ==="
           make -j2 \
             ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             CC=clang \
             LD=ld.lld \
-            modules
+            Image.gz-dtb 2>&1 | tee ../kernel-build.log
+
+          echo "=== BUILD LOG TERAKHIR ==="
+          tail -n 150 ../kernel-build.log
+
+      - name: Show build errors
+        if: failure()
+        run: |
+          echo "========================================"
+          echo "        ERROR ASLI BUILD KERNEL"
+          echo "========================================"
+
+          grep -n -i -E \
+            "error:|fatal:|ld.lld:|clang: error|make: \*\*\*" \
+            kernel-build.log || true
+
+          echo ""
+          echo "========================================"
+          echo "        150 BARIS TERAKHIR"
+          echo "========================================"
+
+          tail -n 150 kernel-build.log
 
       - name: Collect results
         run: |
